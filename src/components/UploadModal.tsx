@@ -71,8 +71,37 @@ export default function UploadModal({ isOpen, onClose }: UploadModalProps) {
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Validate file upload
     if (!uploadedFile) {
       alert('Please upload a file first.');
+      return;
+    }
+
+    // Validate form data
+    if (!formData.patientName.trim()) {
+      alert('Please enter patient name.');
+      return;
+    }
+
+    if (!formData.gender) {
+      alert('Please select gender.');
+      return;
+    }
+
+    const age = parseInt(formData.age);
+    if (isNaN(age) || age < 1 || age > 120) {
+      alert('Please enter a valid age (1-120).');
+      return;
+    }
+
+    if (!formData.phoneNumber.trim()) {
+      alert('Please enter phone number.');
+      return;
+    }
+
+    if (!formData.primaryQuestion.trim()) {
+      alert('Please enter primary question.');
       return;
     }
 
@@ -81,10 +110,13 @@ export default function UploadModal({ isOpen, onClose }: UploadModalProps) {
     try {
       const fileExt = uploadedFile.name.split('.').pop();
       const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const filePath = `prescriptions/${fileName}`;
+      // File path should not include bucket name - just the file path within the bucket
+      const filePath = fileName;
 
       console.log('Uploading file:', fileName, 'Type:', uploadedFile.type, 'Size:', uploadedFile.size);
+      console.log('File path:', filePath);
 
+      // Step 1: Upload file to Supabase Storage
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('prescriptions')
         .upload(filePath, uploadedFile, {
@@ -101,22 +133,25 @@ export default function UploadModal({ isOpen, onClose }: UploadModalProps) {
 
       console.log('File uploaded successfully:', uploadData);
 
+      // Step 2: Get public URL for the uploaded file
       const { data: { publicUrl } } = supabase.storage
         .from('prescriptions')
         .getPublicUrl(filePath);
 
       console.log('Public URL:', publicUrl);
 
+      // Step 3: Determine upload method
       const uploadMethod = uploadedFile.type.startsWith('audio/') ? 'voice' :
                           uploadedFile.type.startsWith('image/') ? 'camera' : 'file';
 
+      // Step 4: Prepare submission data
       const submissionData = {
-        patient_name: formData.patientName,
+        patient_name: formData.patientName.trim(),
         gender: formData.gender,
-        age: parseInt(formData.age),
-        phone_number: formData.phoneNumber,
-        referring_doctor: formData.referringDoctor || null,
-        primary_question: formData.primaryQuestion,
+        age: age, // Use validated age from above
+        phone_number: formData.phoneNumber.trim(),
+        referring_doctor: formData.referringDoctor?.trim() || null,
+        primary_question: formData.primaryQuestion.trim(),
         upload_method: uploadMethod,
         file_url: publicUrl,
         file_type: uploadedFile.type,
@@ -126,6 +161,7 @@ export default function UploadModal({ isOpen, onClose }: UploadModalProps) {
 
       console.log('Submitting to database:', submissionData);
 
+      // Step 5: Insert data into database
       const { data: insertData, error: dbError } = await supabase
         .from('prescription_submissions')
         .insert([submissionData])
@@ -133,7 +169,17 @@ export default function UploadModal({ isOpen, onClose }: UploadModalProps) {
 
       if (dbError) {
         console.error('Error submitting form:', dbError);
-        alert(`Database error: ${dbError.message}. Please try again.`);
+        console.error('Error details:', JSON.stringify(dbError, null, 2));
+        
+        // If database insert fails, try to clean up the uploaded file
+        if (uploadData?.path) {
+          console.log('Attempting to delete uploaded file due to database error...');
+          await supabase.storage
+            .from('prescriptions')
+            .remove([filePath]);
+        }
+        
+        alert(`Database error: ${dbError.message}. Please check the console for details and try again.`);
         setIsSubmitting(false);
         return;
       }
